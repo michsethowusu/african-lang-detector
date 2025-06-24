@@ -121,39 +121,7 @@ class AfricanLanguageDetector:
         return bigrams
 
     def calculate_language_score(self, text: str, language_code: str) -> float:
-    """Calculate score for a language using only start and end bigrams"""
-    if language_code not in self.models:
-        return float('-inf')
-
-    model = self.models[language_code]
-    bigrams = self.extract_bigrams(text)
-
-    if not bigrams:
-        return float('-inf')
-
-    log_probs = []  # Store log probabilities for start/end bigrams
-    position_hits = {'start': False, 'end': False}  # Track if we see at least one start/end
-
-    for bigram, position in bigrams:
-        # Skip middle bigrams
-        if position == 'middle':
-            continue
-
-        # Only process start/end positions
-        prob = model.get_bigram_probability(bigram, position)
-        if prob == 0.0:
-            prob = self.smoothing_factor
-        else:
-            position_hits[position] = True
-
-        log_probs.append(math.log(prob))
-
-    # Require at least one start OR end bigram
-    if not any(position_hits.values()):
-        return float('-inf')
-
-    return sum(log_probs) / len(log_probs)  # Average of start/end log probsdef calculate_language_score(self, text: str, language_code: str) -> float:
-        """Calculate score for a language using averaged position-specific log probabilities"""
+        """Calculate score for a language using only start and end bigrams"""
         if language_code not in self.models:
             return float('-inf')
 
@@ -163,26 +131,27 @@ class AfricanLanguageDetector:
         if not bigrams:
             return float('-inf')
 
-        position_hits = {'start': False, 'middle': False, 'end': False}
-        log_probs = {'start': [], 'middle': [], 'end': []}
+        log_probs = []  # Store log probabilities for start/end bigrams
+        position_hits = {'start': False, 'end': False}  # Track if we see at least one start/end
 
         for bigram, position in bigrams:
+            # Skip middle bigrams
+            if position == 'middle':
+                continue
+
             prob = model.get_bigram_probability(bigram, position)
             if prob == 0.0:
                 prob = self.smoothing_factor
             else:
                 position_hits[position] = True
 
-            log_probs[position].append(math.log(prob))
+            log_probs.append(math.log(prob))
 
-        if not all(position_hits.values()):
+        # Require at least one start OR end bigram
+        if not any(position_hits.values()):
             return float('-inf')
 
-        avg_start = sum(log_probs['start']) / len(log_probs['start']) if log_probs['start'] else -20
-        avg_middle = sum(log_probs['middle']) / len(log_probs['middle']) if log_probs['middle'] else -20
-        avg_end = sum(log_probs['end']) / len(log_probs['end']) if log_probs['end'] else -20
-
-        return (avg_start + avg_middle + avg_end) / 3
+        return sum(log_probs) / len(log_probs)  # Average of start/end log probs
 
     def detect_language(self, text: str, top_n: int = 5) -> List[Dict]:
         if not self.models:
