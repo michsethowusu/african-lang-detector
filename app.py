@@ -1,8 +1,7 @@
 import csv
 import os
 import re
-from collections import defaultdict
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 from pathlib import Path
 import math
 from flask import Flask, request, jsonify
@@ -11,7 +10,6 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 class BigramLanguageModel:
     """Represents bigram patterns for a single language"""
@@ -44,33 +42,26 @@ class BigramLanguageModel:
         if bigram not in self.bigrams:
             return 0.0
 
-        bigram_data = self.bigrams[bigram]
+        data = self.bigrams[bigram]
 
         if position == 'start':
-            if not bigram_data['valid_start']:
-                return 0.0
-            return bigram_data['start_count'] / max(self.total_start_count, 1)
+            return data['start_count'] / max(self.total_start_count, 1) if data['valid_start'] else 0.0
         elif position == 'middle':
-            if not bigram_data['valid_middle']:
-                return 0.0
-            return bigram_data['middle_count'] / max(self.total_middle_count, 1)
+            return data['middle_count'] / max(self.total_middle_count, 1) if data['valid_middle'] else 0.0
         elif position == 'end':
-            if not bigram_data['valid_end']:
-                return 0.0
-            return bigram_data['end_count'] / max(self.total_end_count, 1)
+            return data['end_count'] / max(self.total_end_count, 1) if data['valid_end'] else 0.0
 
         return 0.0
 
 
 class AfricanLanguageDetector:
-    """Main language detection engine - Cloud optimized"""
+    """Main language detection engine"""
 
     def __init__(self):
         self.models = {}
         self.smoothing_factor = 1e-6
 
     def load_language_model(self, csv_file_path: str, language_code: str):
-        """Load bigram data from CSV file"""
         model = BigramLanguageModel(language_code)
 
         try:
@@ -95,26 +86,18 @@ class AfricanLanguageDetector:
             logger.error(f"Error loading {csv_file_path}: {e}")
 
     def load_all_models(self, data_directory: str):
-        """Load all CSV files from directory"""
-        data_path = Path(data_directory)
-        if not data_path.exists():
+        path = Path(data_directory)
+        if not path.exists():
             logger.error(f"Data directory not found: {data_directory}")
             return
 
-        csv_files = list(data_path.glob("*.csv"))
-        if not csv_files:
-            logger.warning(f"No CSV files found in {data_directory}")
-            return
-
-        for csv_file in csv_files:
+        for csv_file in path.glob("*.csv"):
             language_code = csv_file.stem
             self.load_language_model(str(csv_file), language_code)
 
         logger.info(f"Total languages loaded: {len(self.models)}")
 
     def extract_bigrams(self, text: str) -> List[Tuple[str, str]]:
-        """Extract bigrams with their positions from text"""
-        # Clean and normalize text
         text = re.sub(r'[^a-zA-ZɔɛàáèéìíòóùúâêîôûñçÀÁÈÉÌÍÒÓÙÚÂÊÎÔÛÑÇ\s]', '', text)
         text = text.lower().strip()
 
@@ -127,20 +110,50 @@ class AfricanLanguageDetector:
 
             for i in range(len(word) - 1):
                 bigram = word[i:i + 2]
-
                 if i == 0:
                     position = 'start'
                 elif i == len(word) - 2:
                     position = 'end'
                 else:
                     position = 'middle'
-
                 bigrams.append((bigram, position))
 
         return bigrams
 
     def calculate_language_score(self, text: str, language_code: str) -> float:
-        """Calculate likelihood score for a given language"""
+    """Calculate score for a language using only start and end bigrams"""
+    if language_code not in self.models:
+        return float('-inf')
+
+    model = self.models[language_code]
+    bigrams = self.extract_bigrams(text)
+
+    if not bigrams:
+        return float('-inf')
+
+    log_probs = []  # Store log probabilities for start/end bigrams
+    position_hits = {'start': False, 'end': False}  # Track if we see at least one start/end
+
+    for bigram, position in bigrams:
+        # Skip middle bigrams
+        if position == 'middle':
+            continue
+
+        # Only process start/end positions
+        prob = model.get_bigram_probability(bigram, position)
+        if prob == 0.0:
+            prob = self.smoothing_factor
+        else:
+            position_hits[position] = True
+
+        log_probs.append(math.log(prob))
+
+    # Require at least one start OR end bigram
+    if not any(position_hits.values()):
+        return float('-inf')
+
+    return sum(log_probs) / len(log_probs)  # Average of start/end log probsdef calculate_language_score(self, text: str, language_code: str) -> float:
+        """Calculate score for a language using averaged position-specific log probabilities"""
         if language_code not in self.models:
             return float('-inf')
 
@@ -162,34 +175,29 @@ class AfricanLanguageDetector:
 
             log_probs[position].append(math.log(prob))
 
-        # Require at least one valid bigram in each position
         if not all(position_hits.values()):
             return float('-inf')
 
-        # Average log probs per position
         avg_start = sum(log_probs['start']) / len(log_probs['start']) if log_probs['start'] else -20
         avg_middle = sum(log_probs['middle']) / len(log_probs['middle']) if log_probs['middle'] else -20
         avg_end = sum(log_probs['end']) / len(log_probs['end']) if log_probs['end'] else -20
 
-        # Final score = average of the 3 position-based averages
-        final_score = (avg_start + avg_middle + avg_end) / 3
-        return final_score
+        return (avg_start + avg_middle + avg_end) / 3
 
     def detect_language(self, text: str, top_n: int = 5) -> List[Dict]:
-        """Detect the most likely languages for given text"""
         if not self.models:
             return []
 
-        scores = {}
-        for language_code in self.models:
-            scores[language_code] = self.calculate_language_score(text, language_code)
+        scores = {
+            code: self.calculate_language_score(text, code)
+            for code in self.models
+        }
 
         sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
         results = []
         for i, (lang_code, score) in enumerate(sorted_scores[:top_n]):
             confidence = min(100.0, max(0.0, (score + 20) * 5))
-
             results.append({
                 'language': lang_code,
                 'confidence': round(confidence, 2),
@@ -200,54 +208,41 @@ class AfricanLanguageDetector:
         return results
 
     def get_supported_languages(self) -> List[str]:
-        """Get list of supported language codes"""
         return list(self.models.keys())
 
 
-# Initialize detector globally for cloud deployment
+# Initialize detector globally
 detector = AfricanLanguageDetector()
 
-# Try to load models from various possible paths
-possible_paths = [
-    './language_data/',
-    './data/',
-    '/app/language_data/',
-    os.path.join(os.path.dirname(__file__), 'language_data')
-]
-
-for path in possible_paths:
+# Try possible model directories
+for path in ['./language_data/', './data/', '/app/language_data/', os.path.join(os.path.dirname(__file__), 'language_data')]:
     if os.path.exists(path):
         detector.load_all_models(path)
         break
 else:
-    logger.warning("No language data directory found. Please ensure CSV files are available.")
+    logger.warning("No language data directory found.")
 
 # Flask app
 app = Flask(__name__)
 
-
 @app.route('/', methods=['GET'])
 def home():
-    """Home endpoint with API information"""
     return jsonify({
         'service': 'African Language Detection API',
         'version': '1.0.0',
         'endpoints': {
-            'detect': 'POST /detect - Detect language from text',
-            'languages': 'GET /languages - Get supported languages',
-            'health': 'GET /health - Health check'
+            'detect': 'POST /detect',
+            'languages': 'GET /languages',
+            'health': 'GET /health'
         },
         'supported_languages': len(detector.get_supported_languages()),
         'status': 'running'
     })
 
-
 @app.route('/detect', methods=['POST'])
 def detect_language_endpoint():
-    """API endpoint for language detection"""
     try:
         data = request.get_json()
-
         if not data or 'text' not in data:
             return jsonify({'error': 'Missing text parameter'}), 400
 
@@ -270,19 +265,15 @@ def detect_language_endpoint():
         logger.error(f"Detection error: {e}")
         return jsonify({'error': str(e)}), 500
 
-
 @app.route('/languages', methods=['GET'])
 def get_supported_languages():
-    """Get list of supported languages"""
     return jsonify({
         'supported_languages': detector.get_supported_languages(),
         'total_count': len(detector.get_supported_languages())
     })
 
-
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
         'models_loaded': len(detector.models),
@@ -290,8 +281,6 @@ def health_check():
         'service': 'African Language Detection API'
     })
 
-
-# CORS support for web browsers
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -299,12 +288,9 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('DEBUG', 'False').lower() == 'true'
-
     logger.info(f"Starting server on port {port}")
     logger.info(f"Models loaded: {len(detector.models)}")
-
     app.run(host='0.0.0.0', port=port, debug=debug)
