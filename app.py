@@ -142,47 +142,38 @@ class AfricanLanguageDetector:
     def calculate_language_score(self, text: str, language_code: str) -> float:
         """Calculate likelihood score for a given language"""
         if language_code not in self.models:
-            return 0.0
+            return float('-inf')
 
         model = self.models[language_code]
         bigrams = self.extract_bigrams(text)
 
         if not bigrams:
-            return 0.0
+            return float('-inf')
 
-        log_probability = 0.0
-        valid_bigrams = 0
+        position_hits = {'start': False, 'middle': False, 'end': False}
+        log_probs = {'start': [], 'middle': [], 'end': []}
 
         for bigram, position in bigrams:
             prob = model.get_bigram_probability(bigram, position)
-
             if prob == 0.0:
                 prob = self.smoothing_factor
+            else:
+                position_hits[position] = True
 
-            position_hits = {'start': False, 'middle': False, 'end': False}
+            log_probs[position].append(math.log(prob))
 
-            for bigram, position in bigrams:
-                prob = model.get_bigram_probability(bigram, position)
+        # Require at least one valid bigram in each position
+        if not all(position_hits.values()):
+            return float('-inf')
 
-                if prob == 0.0:
-                    prob = self.smoothing_factor
-                else:
-                    position_hits[position] = True
+        # Average log probs per position
+        avg_start = sum(log_probs['start']) / len(log_probs['start']) if log_probs['start'] else -20
+        avg_middle = sum(log_probs['middle']) / len(log_probs['middle']) if log_probs['middle'] else -20
+        avg_end = sum(log_probs['end']) / len(log_probs['end']) if log_probs['end'] else -20
 
-                log_probability += math.log(prob)
-                valid_bigrams += 1
-
-            # Penalize if not all positions are represented
-            if not all(position_hits.values()):
-                return float('-inf')  # or some strong penalty
-
-            if valid_bigrams > 0:
-                return log_probability / valid_bigrams
-
-        if valid_bigrams > 0:
-            return log_probability / valid_bigrams
-
-        return float('-inf')
+        # Final score = average of the 3 position-based averages
+        final_score = (avg_start + avg_middle + avg_end) / 3
+        return final_score
 
     def detect_language(self, text: str, top_n: int = 5) -> List[Dict]:
         """Detect the most likely languages for given text"""
